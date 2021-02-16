@@ -95,7 +95,7 @@ public class RWLock {
 	public void doneRead(){
 		l.acquire();
 		activeReaders--;
-		if(waitingWriters > 0)
+		if(activeReaders == 0 && waitingWriters > 0)
 			writerGo.signal(&l);
 		l.release();
 	}
@@ -191,7 +191,7 @@ while(TRUE){
 				</section>
 				<section>
 					Sleepy Barber
-					<pre class="r-stretch"><code data-trim data-line-numbers="1,47|2-7|9-14|15,16,30,33,34,43|17-20,31|22-24|25-27|28|35-38,44|39-41|47-48|49-50|50-52|54|56-59|60,61,73,75,76,79,81,82,93,95,96,102,104,105,109|62-64|65-67|68|69-72|75-80|83-85|86,87|88-90|91-92|97-99|100-101|106-108|112-113|114-123|125-134">
+					<pre class="r-stretch"><code data-trim data-line-numbers="1,47|2-7|9-14|15,16,30,33,34,43|17-20,31|22-24|25-27|28|35-38,44|39-41|47-48|49-50|50-52|54">
 public class WaitingRoom {
 	private Lock l;
 	private ConditionVariable cond;
@@ -245,6 +245,145 @@ public class BarberChair {
 	private int state; //EMPTY, BARBER_IN_CHAIR,
 	                   //LONG_HAIR_CUSTOMER,
 										 //SHORT_HAIR_CUSTOMER
+	private int custWalkedIn;
+
+	public BarberChair () {
+		state = EMPTY;
+		custWalkedIn = 0;
+	}
+	public void napInChair()
+		l.acquire();
+		if(custWalkedIn == 0){ // Cust could arrive before I sit down
+			state = BARBER_IN_CHAIR;
+		}
+		while(custWalkedIn == 0){
+			barberGetUp.wait(&l);
+		}
+		custWalkedIn = 0;
+		if(state == BARBER_IN_CHAIR){ // Cust could have beaten us
+			state = EMPTY;
+			seatFree.signal(&l);
+		}
+		l.release();
+	}
+	public void wakeBarber() {
+		l.acquire();
+		custWalkedIn = 1;
+		barberGetUp.signal(&l);
+		l.release()
+	}
+	public void sitInChair() {
+		l.acquire()
+		while(state != EMPTY){
+			seatFree.wait(&l);
+		}
+		state = LONG_HAIR_CUSTOMER;
+		sitDown.signal(&l);
+		while(state != SHORT_HAIR_CUSTOMER){
+			cutDone.wait(&l);
+		}
+		state = EMPTY;
+		custUp.signal(&l);
+		l.release();
+	}
+	public void cutHair() {
+		l.acquire();
+		while(state != LONG_HAIR_CUSTOMER){
+			sitDown.wait(&l);
+		}
+		state = SHORT_HAIR_CUSTOMER;
+		cutDone.signal(&l);
+		l.release();
+	}
+	public void tellCustomerDone() {
+		l.acquire();
+		while(state != EMPTY){ // NOTE: No other cust can arrive until I call call_next_cust()
+			custUp.wait(&l);
+		}
+		l.release();
+	}
+}
+WaitingRoom wr = new WaitingRoom(NCHAIRS);
+BarberChair bc = new BarberChair();
+//Customer Process:
+status = wr.custEnter();
+if(status == WR_FULL){
+	return;
+}
+bc.wakeBarber();
+bc.sitInChair(); // Wait for chair to be EMPTY
+// Make state LONG_HAIR_CUSTOMER
+// Wait until SHORT_HAIR_CUSTOMER
+// then make chair EMPTY and return
+
+//Barber Process:
+while(TRUE){
+	status = wr.callNextCustomer();
+	if(status == WR_EMPTY){
+		bc.napInChair(); // Set state to BARBER_IN_CHAIR; return with state EMPTY
+	}
+	bc.cutHair(); // Block until LONG_HAIR_CUSTOMER
+	// Return with SHORT_HAIR_CUSTOMER
+	bc.tellCustomerDone(); // Return when EMPTY
+}
+				</code></pre>
+				</section>
+
+				<section>
+					Sleepy Barber
+					<pre class="r-stretch"><code data-trim data-line-numbers="56-59|60,61,73,75,76,79,81,82,93,95,96,102,104,105,109|62-64|65-67|68|69-72|75-80|83-85|86,87|88-90|91-92|97-99|100-101|106-108|112-113|114-123|125-134">
+public class WaitingRoom {
+	private Lock l;
+	private ConditionVariable cond;
+	private int NCHAIRS;
+	private int nfull;
+	private int ticketAvail;
+	private int ticketTurn;
+
+	public WaitingRoom(int NCHAIRS) {
+		nfull = 0;
+		ticketAvail = 0;
+		ticketTurn = -1;
+		this.NCHAIRS = NCHAIRS;
+	}
+	public int custEnter() {
+		l.acquire();
+		int ret;
+		if(nfull == NCHAIRS){
+			ret = WR_FULL;
+		}
+		else {
+			ret = MY_TURN;
+			myTicket = ticketAvail++;
+			nfull++;
+			while(myTicket > ticketTurn){
+				cond.wait(&l);
+			}
+			nfull--;
+		}
+		l.release();
+		return ret;
+	}
+	public int callNextCustomer() {
+		l.acquire();
+		ticketTurn++;
+		if(nfull == 0){
+			ret = EMPTY;
+		}
+		else {
+			ret = BUSY;
+			cond.broadcast(&l);
+		}
+		l.release();
+		return ret;
+	}
+}
+public class BarberChair {
+	private Lock l;
+	private ConditionVariable custUp, barberGetUp, sitDown,
+	                          seatFree, cutDone;
+	private int state; //EMPTY, BARBER_IN_CHAIR,
+	                   //LONG_HAIR_CUSTOMER, SHORT_HAIR_CUSTOMER
 	private int custWalkedIn;
 
 	public BarberChair () {
